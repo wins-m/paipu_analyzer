@@ -76,9 +76,13 @@ python -m scripts.archiver -i data/raw -o output -f summary_report.xlsx
 
 ## 指标说明（Phase 3 / 4）
 
-- **基础**: 初始分、终盘分、顺位、和了次数、放铳次数
+统计规则对齐 [amae-koromo-scripts](https://github.com/SAPikachu/amae-koromo-scripts)，逐局解析 Record 事件。
+
+- **基础**: 初始分、终盘分、顺位（按终盘分 1～4）、和了次数、放铳次数
 - **进阶**: 立直率、副露率、流局听牌率（默听率、平均向听数可后续扩展）
 - **友人场**: 从 `head.config` 可识别赤宝牌等自定义规则（分析器可扩展）
+
+**详细定义**见 [docs/统计指标说明.md](docs/统计指标说明.md)。
 
 ## 参考资源
 

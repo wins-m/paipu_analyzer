@@ -23,6 +23,7 @@ DEFAULT_RAW_DIR = Path(__file__).resolve().parent.parent / "data" / "raw"
 # 需要统计的 Record 类型名
 RECORD_NEW_ROUND = ".lq.RecordNewRound"
 RECORD_DISCARD_TILE = ".lq.RecordDiscardTile"
+RECORD_DEAL_TILE = ".lq.RecordDealTile"
 RECORD_CHI_PENG_GANG = ".lq.RecordChiPengGang"
 RECORD_AN_GANG_ADD_GANG = ".lq.RecordAnGangAddGang"
 RECORD_HULE = ".lq.RecordHule"
@@ -30,34 +31,95 @@ RECORD_LIU_JU = ".lq.RecordLiuJu"
 RECORD_NO_TILE = ".lq.RecordNoTile"
 
 
+def _seat_to_index(seat: Any) -> int | None:
+    """
+    雀魂协议 seat 为 1-based：1=东、2=南、3=西、4=北。
+    转为 0-based 下标：0=东、1=南、2=西、3=北。
+    """
+    if seat is None:
+        return None
+    try:
+        s = int(seat)
+    except (TypeError, ValueError):
+        return None
+    if 1 <= s <= 4:
+        return s - 1
+    if 0 <= s <= 3:
+        return s  # 兼容已为 0-based 的旧数据
+    return None
+
+
 def _get_head_result(head: dict) -> tuple[list, list, list]:
-    """从 head 取出 result.players 与 accounts，保证按 seat 对齐。返回 (by_seat, final_scores, ranks)。"""
+    """
+    从 head 取出 result.players 与 accounts，保证按 seat 对齐。
+    与 amae-koromo 一致：顺位按终盘分从高到低 1～4，缺 seat 时按数组下标当作 seat。
+    返回 (by_seat, final_scores, ranks)。
+    """
     result = head.get("result") or {}
     players = result.get("players") or []
     accounts = head.get("accounts") or []
     n = max(len(players), len(accounts), 4)
-    # 按 seat 索引
-    by_seat = [None] * n
+    n = min(n, 4)
+    # 协议 seat 为 1-based，转为 0-based；为没有 seat 的 player 分配剩余座次
+    used_seats = set()
+    player_seat_point = []  # (seat_0based, total_point, p)
     for p in players:
-        seat = p.get("seat", 0)
+        if not isinstance(p, dict):
+            continue
+        pt = p.get("total_point", 0) or p.get("part_point_1", 0)
+        seat = _seat_to_index(p.get("seat"))
+        if seat is not None:
+            used_seats.add(seat)
+            player_seat_point.append((seat, pt, p))
+        else:
+            player_seat_point.append((-1, pt, p))  # 无 seat，稍后分配
+    free_seats = [s for s in range(n) if s not in used_seats]
+    for i, (seat, pt, p) in enumerate(player_seat_point):
+        if seat == -1 and free_seats:
+            player_seat_point[i] = (free_seats.pop(0), pt, p)
+
+    by_seat = [None] * n
+    for seat, _pt, p in player_seat_point:
         if 0 <= seat < n:
-            by_seat[seat] = dict(p) if isinstance(p, dict) else {}
+            by_seat[seat] = dict(p)
+            by_seat[seat]["seat"] = seat
+    # accounts：协议 seat 1-based → 0-based；缺 seat 的分配剩余座次
+    used_acc_seats = set()
+    acc_list = []  # (seat_0based, account_dict)
     for a in accounts:
-        seat = a.get("seat", 0)
+        if not isinstance(a, dict):
+            continue
+        seat = _seat_to_index(a.get("seat"))
+        if seat is None:
+            seat = -1
+        if 0 <= seat < n:
+            used_acc_seats.add(seat)
+            acc_list.append((seat, a))
+        else:
+            acc_list.append((-1, a))
+    free_acc_seats = [s for s in range(n) if s not in used_acc_seats]
+    for i, (seat, a) in enumerate(acc_list):
+        if seat == -1 and free_acc_seats:
+            acc_list[i] = (free_acc_seats.pop(0), a)
+    for seat, a in acc_list:
         if 0 <= seat < n:
             if by_seat[seat] is None:
                 by_seat[seat] = {}
             if isinstance(by_seat[seat], dict):
                 by_seat[seat].setdefault("account_id", a.get("account_id", ""))
                 by_seat[seat].setdefault("nickname", a.get("nickname", ""))
-    # 终盘分、顺位
+
+    # 终盘分：按 seat 填
     final_scores = [0] * n
-    ranks = [0] * n
-    for p in players:
-        seat = p.get("seat", 0)
-        if 0 <= seat < n:
-            final_scores[seat] = p.get("total_point", 0) or p.get("part_point_1", 0)
-            ranks[seat] = (p.get("rank", 0) + 1) if isinstance(p.get("rank"), int) else 0
+    for seat, pt, _p in player_seat_point:
+        final_scores[seat] = pt
+
+    # 顺位：按终盘分从高到低 1～4（与 amae-koromo 一致）
+    rank_by_seat = {}
+    sorted_seats = sorted(range(n), key=lambda s: final_scores[s], reverse=True)
+    for rank_one_based, seat in enumerate(sorted_seats, start=1):
+        rank_by_seat[seat] = rank_one_based
+    ranks = [rank_by_seat.get(s, 0) for s in range(n)]
     return by_seat, final_scores, ranks
 
 
@@ -110,6 +172,10 @@ def _parse_one_game(file_path: Path) -> list[dict] | None:
     meld_count = [0] * 4
     no_ten_rounds = 0
     tenpai_on_no_ten = [0] * 4
+    # 立直可能出现在 RecordDiscardTile（有 seat）或下一手 RecordDealTile.liqi.seat，避免同一次立直计两次
+    just_counted_riichi = False
+    # 当前行动者（0-based），用于推断无 seat 的 Record：协议中部分打出/摸牌无 seat，按轮转东→南→西→北→东
+    current_seat = 0
 
     for item in actions:
         name = item.get("name") or ""
@@ -123,46 +189,83 @@ def _parse_one_game(file_path: Path) -> list[dict] | None:
                         initial_scores[i] = s
                 current_initial = list(initial_scores)
             last_discard_seat = -1
+            just_counted_riichi = False
+            # 协议中第一个打出常无 seat，为北家(3)；北→东→南→西，故新局后当前行动者=北家
+            current_seat = 3
             continue
         if name == RECORD_DISCARD_TILE:
-            seat = d.get("seat", 0)
-            if 0 <= seat < 4:
+            idx = _seat_to_index(d.get("seat"))
+            if idx is None:
+                idx = current_seat  # 无 seat 时按轮转视为当前行动者（多为北家）
+            if 0 <= idx < 4:
                 if d.get("is_liqi"):
-                    riichi[seat] += 1
-                last_discard_seat = seat
+                    riichi[idx] += 1
+                    just_counted_riichi = True
+                else:
+                    just_counted_riichi = False
+                last_discard_seat = idx
+            current_seat = (idx + 1) % 4  # 下一家摸牌
+            continue
+        if name == RECORD_DEAL_TILE:
+            raw_seat = d.get("seat")
+            if raw_seat is not None:
+                idx = _seat_to_index(raw_seat)
+                if idx is not None:
+                    current_seat = idx  # 有 seat 时同步轮转
+            if not just_counted_riichi:
+                liqi = d.get("liqi")
+                if isinstance(liqi, dict) and "seat" in liqi:
+                    idx = _seat_to_index(liqi["seat"])
+                    if idx is not None:
+                        riichi[idx] += 1
+            just_counted_riichi = False
             continue
         if name == RECORD_CHI_PENG_GANG:
-            seat = d.get("seat", 0)
-            if 0 <= seat < 4:
-                meld_count[seat] += 1
+            # 副露 seat 为 1-based（1=东、2=南、3=西、4=北）；协议常省略北家则送 None，归为 index 3
+            raw_seat = d.get("seat")
+            idx = _seat_to_index(raw_seat) if raw_seat is not None else 3
+            if idx is not None and 0 <= idx < 4:
+                meld_count[idx] += 1
             continue
         if name == RECORD_AN_GANG_ADD_GANG:
-            seat = d.get("seat", 0)
-            if 0 <= seat < 4:
-                meld_count[seat] += 1
+            raw_seat = d.get("seat")
+            idx = _seat_to_index(raw_seat) if raw_seat is not None else 3
+            if idx is not None and 0 <= idx < 4:
+                meld_count[idx] += 1
             continue
         if name == RECORD_HULE:
-            hules = d.get("hules") or [{}]
-            zimo = hules[0].get("zimo", False) if hules else False
-            seat = d.get("seat", 0)
-            if 0 <= seat < 4:
-                wins[seat] += 1
-            if not zimo and 0 <= last_discard_seat < 4:
+            # 与 amae-koromo 一致：每个和了者各计 1 次（双响/三响时 hules 有多条）；荣和时放铳者 = 上一手出牌者
+            # 注意：RecordHule 内 hule.seat 为 0-based（0=东、1=南、2=西、3=北），与其它 Record 的 1-based 不同
+            hules = d.get("hules") or []
+            delta_scores = d.get("delta_scores") or []
+            winning_indices = [i for i in range(min(4, len(delta_scores))) if delta_scores[i] > 0]
+            zimo_any = False
+            for h in hules:
+                if not isinstance(h, dict):
+                    continue
+                raw_seat = h.get("seat")
+                if raw_seat is not None and 0 <= raw_seat <= 3:
+                    idx = raw_seat  # RecordHule 内 seat 已是 0-based
+                else:
+                    idx = _seat_to_index(raw_seat)  # 兼容 1-based 或 None
+                if idx is None and winning_indices:
+                    idx = winning_indices.pop(0)  # 无 seat 时用 delta_scores 得分增加者
+                if idx is not None and 0 <= idx < 4:
+                    wins[idx] += 1
+                if h.get("zimo"):
+                    zimo_any = True
+            if not zimo_any and last_discard_seat is not None and 0 <= last_discard_seat < 4:
                 deal_in[last_discard_seat] += 1
             last_discard_seat = -1
             continue
         if name == RECORD_LIU_JU:
-            # 流局：type 等；听牌信息可能在 scores 的 delta_scores 或单独字段
             no_ten_rounds += 1
-            # 若协议中有听牌标记，可在此累加 tenpai_on_no_ten[seat]
             continue
         if name == RECORD_NO_TILE:
+            # 流局听牌：data.players 按 seat 顺序，每项有 tingpai 表示该席听牌（与 amae-koromo 协议一致）
             no_ten_rounds += 1
-            scores = d.get("scores") or []
-            for s in scores:
-                seat = s.get("seat", 0)
-                # 流局听牌：通常有 no_ten 或 ten 等字段，这里用 delta 近似
-                if 0 <= seat < 4 and s.get("tingpai") or s.get("ting_pai"):
+            for seat, p in enumerate(d.get("players") or []):
+                if 0 <= seat < 4 and isinstance(p, dict) and p.get("tingpai"):
                     tenpai_on_no_ten[seat] += 1
             last_discard_seat = -1
             continue

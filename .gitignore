@@ -7,3 +7,5 @@ data/raw/**/*.json
 .venv
 run.sh
 urls.txt
+stats.csv
+stats.csv
