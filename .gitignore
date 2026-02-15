@@ -1,8 +1,9 @@
 output/*
 venv/
-data/raw/*.json
+data/raw/**/*.json
 .cursorrules
 **/__pycache__
 ./run.sh
 .venv
 run.sh
+urls.txt

@@ -145,7 +145,6 @@ def _get_region_url_from_config(config: dict) -> tuple[str | None, str | None]:
 
 # HTTP 请求超时，避免卡死
 _NETWORK_TIMEOUT = aiohttp.ClientTimeout(total=25, connect=10)
-_GATEWAY_QUERY_TIMEOUT = aiohttp.ClientTimeout(total=12, connect=8)
 
 
 def _https_url_to_wss_endpoint(https_url: str) -> str:
@@ -175,21 +174,10 @@ async def _get_endpoint_and_version() -> tuple[str, str]:
 
         if direct_wss:
             endpoint = direct_wss
-            logger.info("Using gateway: %s", endpoint)
         else:
-            logger.info("Resolving gateway list from %s...", url[:60] + "..." if len(url) > 60 else url)
-            try:
-                async with aiohttp.ClientSession(timeout=_GATEWAY_QUERY_TIMEOUT) as gw_session:
-                    async with gw_session.get(url + "?service=ws-gateway&protocol=ws&ssl=true") as res:
-                        servers = await res.json()
-                if "servers" not in servers:
-                    raise FetcherError("Cannot get gateway servers")
-                server = random.choice(servers["servers"])
-                endpoint = f"wss://{server}/gateway"
-            except (asyncio.TimeoutError, aiohttp.ClientError, ValueError) as e:
-                logger.warning("Gateway list request failed (%s), using URL as WSS endpoint", e)
-                endpoint = _https_url_to_wss_endpoint(url)
-            logger.info("Connecting to gateway: %s", endpoint)
+            # 新版雀魂 gateway 列表接口常超时，直接拿 config 里的 URL 当 WSS 用
+            endpoint = _https_url_to_wss_endpoint(url)
+        logger.info("Connecting to gateway: %s", endpoint)
     return endpoint, version_to_force
 
 
@@ -295,6 +283,15 @@ async def run_fetcher(
     返回成功保存的文件路径列表。已失效的链接会跳过并记录 Log。
     """
     raw_dir = raw_dir or DEFAULT_RAW_DIR
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    to_fetch = [u for u in uuid_list if not (raw_dir / f"{u}.json").exists()]
+    skipped = len(uuid_list) - len(to_fetch)
+    if skipped:
+        logger.info("Skipping %d already present in %s", skipped, raw_dir)
+    if not to_fetch:
+        logger.info("All records already exist, nothing to fetch.")
+        return []
+
     endpoint, version_to_force = await _get_endpoint_and_version()
     channel = MSRPCChannel(endpoint)
     logger.info("Connecting WebSocket...")
@@ -321,7 +318,7 @@ async def run_fetcher(
         raise FetcherLoginError("Login failed (no access_token)")
 
     saved = []
-    for game_uuid in uuid_list:
+    for game_uuid in to_fetch:
         path = await fetch_one(lobby, version_to_force, game_uuid, raw_dir)
         if path is not None:
             saved.append(path)
@@ -333,14 +330,41 @@ async def run_fetcher(
 
 def main():
     import argparse
-    parser = argparse.ArgumentParser(description="雀魂牌谱下载器：从 URL 或 UUID 列表下载牌谱到 data/raw/")
-    parser.add_argument("inputs", nargs="+", help="牌谱 URL 或 UUID（可混用）")
+    parser = argparse.ArgumentParser(
+        description="雀魂牌谱下载器：从 URL 或 UUID 列表下载牌谱到 data/raw/。支持批量：可传多个 URL，或用 -f 从文件读入。"
+    )
+    parser.add_argument(
+        "inputs",
+        nargs="*",
+        help="牌谱 URL 或 UUID，可写多个。与 -f 二选一；若用 -f 则此处可不写。",
+    )
+    parser.add_argument(
+        "-f",
+        "--file",
+        type=Path,
+        metavar="PATH",
+        help="从文件读取链接，每行一个 URL 或 UUID（空行与 # 开头行忽略）",
+    )
     parser.add_argument("-u", "--username", required=True, help="雀魂账号（仅国服支持账号密码）")
     parser.add_argument("-p", "--password", required=True, help="雀魂密码")
     parser.add_argument("-o", "--output-dir", type=Path, default=DEFAULT_RAW_DIR, help="原始 JSON 输出目录")
     args = parser.parse_args()
 
-    uuids = extract_uuids_from_urls(args.inputs)
+    # 收集所有输入：命令行 + 可选的文件
+    raw_inputs: list[str] = list(args.inputs or [])
+    if args.file is not None:
+        if not args.file.exists():
+            logger.error("文件不存在: %s", args.file)
+            return 1
+        with open(args.file, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    raw_inputs.append(line)
+    if not raw_inputs:
+        parser.error("请提供至少一个牌谱 URL/UUID，或使用 -f 指定包含链接的文件")
+
+    uuids = extract_uuids_from_urls(raw_inputs)
     if not uuids:
         logger.error("未解析到任何有效 UUID")
         return 1
