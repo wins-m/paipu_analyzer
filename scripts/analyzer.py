@@ -174,8 +174,11 @@ def _parse_one_game(file_path: Path) -> list[dict] | None:
     tenpai_on_no_ten = [0] * 4
     # 立直可能出现在 RecordDiscardTile（有 seat）或下一手 RecordDealTile.liqi.seat，避免同一次立直计两次
     just_counted_riichi = False
+    last_riichi_seat = -1  # 最近一次计入立直时的座次，用于立直放铳时回退
     # 当前行动者（0-based），用于推断无 seat 的 Record：协议中部分打出/摸牌无 seat，按轮转东→南→西→北→东
     current_seat = 0
+    # 上一手打出是否为立直（含摸牌立直后当即打出）：立直放铳时该次立直不计入
+    last_discard_was_riichi = False
 
     for item in actions:
         name = item.get("name") or ""
@@ -190,6 +193,8 @@ def _parse_one_game(file_path: Path) -> list[dict] | None:
                 current_initial = list(initial_scores)
             last_discard_seat = -1
             just_counted_riichi = False
+            last_discard_was_riichi = False
+            last_riichi_seat = -1
             # 协议中第一个打出常无 seat，为北家(3)；北→东→南→西，故新局后当前行动者=北家
             current_seat = 3
             continue
@@ -198,13 +203,20 @@ def _parse_one_game(file_path: Path) -> list[dict] | None:
             if idx is None:
                 idx = current_seat  # 无 seat 时按轮转视为当前行动者（多为北家）
             if 0 <= idx < 4:
-                if d.get("is_liqi"):
+                is_liqi = d.get("is_liqi")
+                # 打牌立直 或 摸牌立直后当即打出（上一事件 DealTile.liqi 且本手打出者=立直者）
+                last_discard_was_riichi = bool(is_liqi) or (just_counted_riichi and idx == last_riichi_seat)
+                if is_liqi:
                     riichi[idx] += 1
                     just_counted_riichi = True
+                    last_riichi_seat = idx
                 else:
                     just_counted_riichi = False
+                    last_riichi_seat = -1
                 last_discard_seat = idx
-            current_seat = (idx + 1) % 4  # 下一家摸牌
+            else:
+                last_discard_was_riichi = False
+            current_seat = (idx + 1) % 4 if idx is not None else (current_seat + 1) % 4
             continue
         if name == RECORD_DEAL_TILE:
             raw_seat = d.get("seat")
@@ -218,6 +230,7 @@ def _parse_one_game(file_path: Path) -> list[dict] | None:
                     idx = _seat_to_index(liqi["seat"])
                     if idx is not None:
                         riichi[idx] += 1
+                        last_riichi_seat = idx
             just_counted_riichi = False
             continue
         if name == RECORD_CHI_PENG_GANG:
@@ -256,7 +269,11 @@ def _parse_one_game(file_path: Path) -> list[dict] | None:
                     zimo_any = True
             if not zimo_any and last_discard_seat is not None and 0 <= last_discard_seat < 4:
                 deal_in[last_discard_seat] += 1
+                # 立直放铳：该次立直不计入，从放铳者立直数回退 1
+                if last_discard_was_riichi:
+                    riichi[last_discard_seat] = max(0, riichi[last_discard_seat] - 1)
             last_discard_seat = -1
+            last_discard_was_riichi = False
             continue
         if name == RECORD_LIU_JU:
             no_ten_rounds += 1
@@ -268,6 +285,7 @@ def _parse_one_game(file_path: Path) -> list[dict] | None:
                 if 0 <= seat < 4 and isinstance(p, dict) and p.get("tingpai"):
                     tenpai_on_no_ten[seat] += 1
             last_discard_seat = -1
+            last_discard_was_riichi = False
             continue
 
     # 若未从 RecordNewRound 取到初始分，用默认
