@@ -1,0 +1,10 @@
+# 雀魂牌谱采集与分析
+# 数据抓取与协议
+aiohttp>=3.8.0
+websockets>=10.0
+# mahjong_soul_api 未上架 PyPI，从 GitHub 安装
+git+https://github.com/MahjongRepository/mahjong_soul_api.git
+protobuf>=4.21.0
+# 数据处理与报告
+pandas>=2.0.0
+openpyxl>=3.1.0
