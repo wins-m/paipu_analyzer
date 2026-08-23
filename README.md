@@ -84,6 +84,54 @@ python -m scripts.archiver -i data/raw -o output -f summary_report.xlsx
 
 **详细定义**见 [docs/统计指标说明.md](docs/统计指标说明.md)。
 
+## 示例（已脱敏，UUID/昵称/账号均为占位符）
+
+### 原始牌谱 JSON（`data/raw/*.json`，节选）
+
+```json
+{
+  "head": {
+    "uuid": "00000000-0000-0000-0000-000000000000",
+    "accounts": [
+      {"seat": 1, "account_id": 10000001, "nickname": "选手A"},
+      {"seat": 2, "account_id": 10000002, "nickname": "选手B"},
+      {"seat": 3, "account_id": 10000003, "nickname": "选手C"},
+      {"seat": 4, "account_id": 10000004, "nickname": "选手D"}
+    ],
+    "result": {
+      "players": [
+        {"seat": 1, "total_point": 32000},
+        {"seat": 2, "total_point": 28000},
+        {"seat": 3, "total_point": 22000},
+        {"seat": 4, "total_point": 18000}
+      ]
+    },
+    "config": {}
+  },
+  "data": [
+    {"name": ".lq.RecordNewRound", "data": {"chang": 0, "ju": 0}},
+    {"name": ".lq.RecordDiscardTile", "data": {"seat": 0, "tile": "1m"}},
+    {"name": ".lq.RecordHule", "data": {"seat": 0, "delta_scores": [8000, -8000, 0, 0]}}
+  ]
+}
+```
+
+### 统计输出（`stats.csv`，节选）
+
+| game_uuid | seat | account_id | nickname | initial_point | final_point | rank | wins | deal_in | riichi | melds | no_ten_tenpai |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 00000000-0000-... | 0 | 10000001 | 选手A | 25000 | 32000 | 1 | 1 | 0 | 1 | 0 | 0 |
+| 00000000-0000-... | 1 | 10000002 | 选手B | 25000 | 28000 | 2 | 0 | 1 | 0 | 1 | 1 |
+| 00000000-0000-... | 2 | 10000003 | 选手C | 25000 | 22000 | 3 | 0 | 0 | 0 | 0 | 1 |
+| 00000000-0000-... | 3 | 10000004 | 选手D | 25000 | 18000 | 4 | 0 | 0 | 1 | 0 | 0 |
+
+### 选手汇总（`summary_report.xlsx`，节选）
+
+| account_id | nickname | games | avg_rank | win_rate | deal_in_rate | riichi_rate |
+|---|---|---|---|---|---|---|
+| 10000001 | 选手A | 12 | 2.08 | 25.0% | 16.7% | 33.3% |
+| 10000002 | 选手B | 12 | 2.42 | 16.7% | 25.0% | 25.0% |
+
 ## 参考资源
 
 - [amae-koromo-scripts](https://github.com/SAPikachu/amae-koromo-scripts) — 统计逻辑与 proto 参考
