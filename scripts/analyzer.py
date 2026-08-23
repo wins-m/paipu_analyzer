@@ -49,11 +49,12 @@ def _seat_to_index(seat: Any) -> int | None:
     return None
 
 
-def _get_head_result(head: dict) -> tuple[list, list, list]:
+def _get_head_result(head: dict) -> tuple[list, list, list, list]:
     """
     从 head 取出 result.players 与 accounts，保证按 seat 对齐。
     与 amae-koromo 一致：顺位按终盘分从高到低 1～4，缺 seat 时按数组下标当作 seat。
-    返回 (by_seat, final_scores, ranks)。
+    返回 (by_seat, final_scores, ranks, result_order_to_seat)。
+    result_order_to_seat[i] = result.players[i] 的 0-based 座次（东0南1西2北3），RecordHule 的 seat/delta_scores 为 result.players 数组下标。
     """
     result = head.get("result") or {}
     players = result.get("players") or []
@@ -120,7 +121,10 @@ def _get_head_result(head: dict) -> tuple[list, list, list]:
     for rank_one_based, seat in enumerate(sorted_seats, start=1):
         rank_by_seat[seat] = rank_one_based
     ranks = [rank_by_seat.get(s, 0) for s in range(n)]
-    return by_seat, final_scores, ranks
+    result_order_to_seat = [player_seat_point[i][0] for i in range(len(player_seat_point))]
+    while len(result_order_to_seat) < 4:
+        result_order_to_seat.append(None)
+    return by_seat, final_scores, ranks, result_order_to_seat[:4]
 
 
 def _parse_one_game(file_path: Path) -> list[dict] | None:
@@ -140,7 +144,7 @@ def _parse_one_game(file_path: Path) -> list[dict] | None:
     head = data.get("head") or {}
     actions = data.get("actions") or []
 
-    by_seat, final_scores, ranks = _get_head_result(head)
+    by_seat, final_scores, ranks, result_order_to_seat = _get_head_result(head)
     n_players = len([x for x in by_seat if x is not None])
     if n_players == 0:
         n_players = 4
@@ -247,26 +251,15 @@ def _parse_one_game(file_path: Path) -> list[dict] | None:
                 meld_count[idx] += 1
             continue
         if name == RECORD_HULE:
-            # 与 amae-koromo 一致：每个和了者各计 1 次（双响/三响时 hules 有多条）；荣和时放铳者 = 上一手出牌者
-            # 注意：RecordHule 内 hule.seat 为 0-based（0=东、1=南、2=西、3=北），与其它 Record 的 1-based 不同
+            # 和了者仅从 delta_scores 判定（与 result.players 顺序一致），避免 hule.seat 与 by_seat 错位
             hules = d.get("hules") or []
             delta_scores = d.get("delta_scores") or []
-            winning_indices = [i for i in range(min(4, len(delta_scores))) if delta_scores[i] > 0]
-            zimo_any = False
-            for h in hules:
-                if not isinstance(h, dict):
-                    continue
-                raw_seat = h.get("seat")
-                if raw_seat is not None and 0 <= raw_seat <= 3:
-                    idx = raw_seat  # RecordHule 内 seat 已是 0-based
-                else:
-                    idx = _seat_to_index(raw_seat)  # 兼容 1-based 或 None
-                if idx is None and winning_indices:
-                    idx = winning_indices.pop(0)  # 无 seat 时用 delta_scores 得分增加者
-                if idx is not None and 0 <= idx < 4:
-                    wins[idx] += 1
-                if h.get("zimo"):
-                    zimo_any = True
+            for i in range(min(4, len(delta_scores))):
+                if delta_scores[i] > 0 and i < len(result_order_to_seat) and result_order_to_seat[i] is not None:
+                    seat = result_order_to_seat[i]
+                    if 0 <= seat < 4:
+                        wins[seat] += 1
+            zimo_any = any(isinstance(h, dict) and h.get("zimo") for h in (hules or []))
             if not zimo_any and last_discard_seat is not None and 0 <= last_discard_seat < 4:
                 deal_in[last_discard_seat] += 1
                 # 立直放铳：该次立直不计入，从放铳者立直数回退 1
@@ -292,9 +285,10 @@ def _parse_one_game(file_path: Path) -> list[dict] | None:
     if current_initial is None:
         current_initial = list(initial_scores)
 
-    # 每人一行
+    # 每人一行：按 seat 0=东、1=南、2=西、3=北 顺序输出，与 by_seat/wins 下标一致
     rows = []
-    for seat in range(n_players):
+    n_out = min(4, max(n_players, 4))
+    for seat in range(n_out):
         row = {
             "game_uuid": uuid_val,
             "account_id": account_ids[seat],
