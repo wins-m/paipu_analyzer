@@ -1,45 +1,47 @@
-# 雀魂牌谱数据采集与分析 (Majsoul Paipu Harvester & Analyzer)
+# Majsoul Paipu Harvester & Analyzer
 
-轻量级 Python 工具：通过雀魂牌谱链接（UUID）批量下载对局数据，并按 [amae-koromo-scripts](https://github.com/SAPikachu/amae-koromo-scripts) 思路做多维度选手统计与归档。
+*[中文说明 (Chinese README)](README.zh-CN.md)*
 
-## 技术栈
+A lightweight Python toolkit that batch-downloads Mahjong Soul (雀魂) game records via paipu links (UUIDs) and produces multi-dimensional player statistics and archives, following the approach of [amae-koromo-scripts](https://github.com/SAPikachu/amae-koromo-scripts).
 
-- **抓取**: 使用 [mahjong_soul_api](https://github.com/MahjongRepository/mahjong_soul_api) 与雀魂 WebSocket 通信，调用 `fetchGameRecord`
-- **协议**: 同上库的 Protobuf 定义（`.proto` 参考 amae-koromo-scripts）
-- **处理**: Python + Pandas；原始数据存 JSON，统计结果存 CSV/Excel
+## Tech Stack
 
-## 环境准备
+- **Fetching**: [mahjong_soul_api](https://github.com/MahjongRepository/mahjong_soul_api) talks to the Majsoul WebSocket API and calls `fetchGameRecord`
+- **Protocol**: Protobuf definitions from the same library (`.proto` reference: amae-koromo-scripts)
+- **Processing**: Python + Pandas; raw data stored as JSON, stats output as CSV/Excel
+
+## Setup
 
 ```bash
-# 建议使用虚拟环境
+# A virtual environment is recommended
 python -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 
-# 依赖（mahjong_soul_api 若 PyPI 无则从 Git 安装）
+# Dependencies (install mahjong_soul_api from Git if not on PyPI)
 pip install -r requirements.txt
 pip install git+https://github.com/MahjongRepository/mahjong_soul_api.git
 ```
 
-## 目录结构
+## Project Layout
 
 ```
 paipu_analyzer/
-├── data/raw/          # 原始牌谱 JSON（下载器写入）
-├── output/            # 最终 Excel 报告
-├── protocols/         # 协议说明（实际使用 ms 包）
+├── data/raw/          # Raw paipu JSON (written by the fetcher)
+├── output/            # Final Excel reports
+├── protocols/         # Protocol notes (the `ms` package is used in practice)
 ├── scripts/
-│   ├── utils_url.py   # Phase 1: URL → UUID 解析
-│   ├── fetcher.py     # Phase 2: 下载牌谱 → JSON
-│   ├── analyzer.py    # Phase 3: JSON → 每局每人统计
-│   └── archiver.py    # Phase 4: 按选手聚合 → summary_report.xlsx
+│   ├── utils_url.py   # Phase 1: URL → UUID parsing
+│   ├── fetcher.py     # Phase 2: download paipu → JSON
+│   ├── analyzer.py    # Phase 3: JSON → per-game per-player stats
+│   └── archiver.py    # Phase 4: aggregate by player → summary_report.xlsx
 └── requirements.txt
 ```
 
-## 使用步骤
+## Usage
 
-### 1. 提取 UUID（Phase 1）
+### 1. Extract UUIDs (Phase 1)
 
-支持完整 URL 或仅 UUID；自动忽略 `_a123...` 视角后缀。
+Accepts full URLs or bare UUIDs; automatically strips the `_a123...` viewpoint suffix.
 
 ```python
 from scripts.utils_url import extract_uuid_from_url, extract_uuids_from_urls
@@ -49,54 +51,54 @@ urls = ["https://game.maj-soul.com/1/?paipu=uuid1", "uuid2"]
 uuids = extract_uuids_from_urls(urls)
 ```
 
-### 2. 下载牌谱（Phase 2）
+### 2. Download paipu (Phase 2)
 
-需**国服账号**（仅国服支持账号密码登录）。失效链接（如超 30 天未存盘）会跳过并打 Log。
+Requires a **CN-server account** (only the CN server supports username/password login). Expired links (e.g. unsaved for over 30 days) are skipped and logged.
 
 ```bash
-python -m scripts.fetcher -u 你的邮箱 -p 你的密码 "https://game.maj-soul.com/1/?paipu=UUID1" "UUID2"
-# 输出目录默认 data/raw/，可用 -o 指定
+python -m scripts.fetcher -u your_email -p your_password "https://game.maj-soul.com/1/?paipu=UUID1" "UUID2"
+# Default output dir is data/raw/, override with -o
 ```
 
-### 3. 统计与归档（Phase 3 + 4）
+### 3. Stats and archiving (Phase 3 + 4)
 
 ```bash
-# 仅统计，输出 CSV（可选）
+# Stats only, output CSV (optional)
 python -m scripts.analyzer -i data/raw -o stats.csv
 
-# 直接生成选手汇总 Excel
+# Generate the player summary Excel report directly
 python -m scripts.archiver -i data/raw -o output -f summary_report.xlsx
 ```
 
-## 业务规则
+## Business Rules
 
-- **UUID**: 只保留下划线前的主 UUID，忽略 `_a123...` 等后缀。
-- **选手唯一性**: 以 `account_id` 为唯一标识；同一人在多局中昵称可不同。
-- **异常**: 已失效的牌谱链接跳过并记录日志，不中断批量任务。
+- **UUID**: only the primary UUID before the underscore is kept; `_a123...` suffixes are ignored.
+- **Player identity**: `account_id` is the unique key; the same player's nickname may differ across games.
+- **Errors**: expired paipu links are skipped and logged, without interrupting the batch job.
 
-## 指标说明（Phase 3 / 4）
+## Metrics (Phase 3 / 4)
 
-统计规则对齐 [amae-koromo-scripts](https://github.com/SAPikachu/amae-koromo-scripts)，逐局解析 Record 事件。
+Stats logic follows [amae-koromo-scripts](https://github.com/SAPikachu/amae-koromo-scripts), parsing Record events game by game.
 
-- **基础**: 初始分、终盘分、顺位（按终盘分 1～4）、和了次数、放铳次数
-- **进阶**: 立直率、副露率、流局听牌率（默听率、平均向听数可后续扩展）
-- **友人场**: 从 `head.config` 可识别赤宝牌等自定义规则（分析器可扩展）
+- **Basic**: initial score, final score, rank (1–4 by final score), win count, deal-in count
+- **Advanced**: riichi rate, meld (fuuro) rate, no-ten/tenpai-at-draw rate (mokuten rate and average shanten can be added later)
+- **Friendly (yūjin) games**: custom rules such as red fives can be detected from `head.config` (extensible in the analyzer)
 
-**详细定义**见 [docs/统计指标说明.md](docs/统计指标说明.md)。
+**Detailed definitions**: [docs/统计指标说明.md](docs/统计指标说明.md) (Chinese).
 
-## 示例（已脱敏，UUID/昵称/账号均为占位符）
+## Example (sanitized — UUIDs, nicknames, and account IDs are all placeholders)
 
-### 原始牌谱 JSON（`data/raw/*.json`，节选）
+### Raw paipu JSON (`data/raw/*.json`, excerpt)
 
 ```json
 {
   "head": {
     "uuid": "00000000-0000-0000-0000-000000000000",
     "accounts": [
-      {"seat": 1, "account_id": 10000001, "nickname": "选手A"},
-      {"seat": 2, "account_id": 10000002, "nickname": "选手B"},
-      {"seat": 3, "account_id": 10000003, "nickname": "选手C"},
-      {"seat": 4, "account_id": 10000004, "nickname": "选手D"}
+      {"seat": 1, "account_id": 10000001, "nickname": "PlayerA"},
+      {"seat": 2, "account_id": 10000002, "nickname": "PlayerB"},
+      {"seat": 3, "account_id": 10000003, "nickname": "PlayerC"},
+      {"seat": 4, "account_id": 10000004, "nickname": "PlayerD"}
     ],
     "result": {
       "players": [
@@ -116,24 +118,24 @@ python -m scripts.archiver -i data/raw -o output -f summary_report.xlsx
 }
 ```
 
-### 统计输出（`stats.csv`，节选）
+### Stats output (`stats.csv`, excerpt)
 
 | game_uuid | seat | account_id | nickname | initial_point | final_point | rank | wins | deal_in | riichi | melds | no_ten_tenpai |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| 00000000-0000-... | 0 | 10000001 | 选手A | 25000 | 32000 | 1 | 1 | 0 | 1 | 0 | 0 |
-| 00000000-0000-... | 1 | 10000002 | 选手B | 25000 | 28000 | 2 | 0 | 1 | 0 | 1 | 1 |
-| 00000000-0000-... | 2 | 10000003 | 选手C | 25000 | 22000 | 3 | 0 | 0 | 0 | 0 | 1 |
-| 00000000-0000-... | 3 | 10000004 | 选手D | 25000 | 18000 | 4 | 0 | 0 | 1 | 0 | 0 |
+| 00000000-0000-... | 0 | 10000001 | PlayerA | 25000 | 32000 | 1 | 1 | 0 | 1 | 0 | 0 |
+| 00000000-0000-... | 1 | 10000002 | PlayerB | 25000 | 28000 | 2 | 0 | 1 | 0 | 1 | 1 |
+| 00000000-0000-... | 2 | 10000003 | PlayerC | 25000 | 22000 | 3 | 0 | 0 | 0 | 0 | 1 |
+| 00000000-0000-... | 3 | 10000004 | PlayerD | 25000 | 18000 | 4 | 0 | 0 | 1 | 0 | 0 |
 
-### 选手汇总（`summary_report.xlsx`，节选）
+### Player summary (`summary_report.xlsx`, excerpt)
 
 | account_id | nickname | games | avg_rank | win_rate | deal_in_rate | riichi_rate |
 |---|---|---|---|---|---|---|
-| 10000001 | 选手A | 12 | 2.08 | 25.0% | 16.7% | 33.3% |
-| 10000002 | 选手B | 12 | 2.42 | 16.7% | 25.0% | 25.0% |
+| 10000001 | PlayerA | 12 | 2.08 | 25.0% | 16.7% | 33.3% |
+| 10000002 | PlayerB | 12 | 2.42 | 16.7% | 25.0% | 25.0% |
 
-## 参考资源
+## References
 
-- [amae-koromo-scripts](https://github.com/SAPikachu/amae-koromo-scripts) — 统计逻辑与 proto 参考
-- [mahjong_soul_api](https://github.com/MahjongRepository/mahjong_soul_api) — WebSocket 与 Protobuf
-- [tensoul](https://github.com/Equim-chan/tensoul) / [tensoul-py](https://github.com/ssttkkl/tensoul-py) — 牌谱获取思路
+- [amae-koromo-scripts](https://github.com/SAPikachu/amae-koromo-scripts) — stats logic and proto reference
+- [mahjong_soul_api](https://github.com/MahjongRepository/mahjong_soul_api) — WebSocket and Protobuf
+- [tensoul](https://github.com/Equim-chan/tensoul) / [tensoul-py](https://github.com/ssttkkl/tensoul-py) — paipu-fetching approach
